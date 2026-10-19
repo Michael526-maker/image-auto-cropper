@@ -11,8 +11,33 @@ st.set_page_config(page_title="PRO 圖片批量裁切與高清增強工具", pag
 st.title("✂️ 專業級不規則圖片自動切割與畫質優化工具")
 st.caption("支援抗陰影、防白毛切碎、正方形置中補齊、透明底及 1200x1200px 印刷級高解析度輸出！")
 
-# ================= 側邊欄：功能開關與參數微調 =================
+# ================= 側邊欄：功能開關與視覺圖解 =================
 st.sidebar.header("🛠️ 裁切與畫質設定")
+
+# 視覺圖解說明區
+with st.sidebar.expander("📖 參數調節圖解指引 (點擊查看說明)", expanded=False):
+    st.markdown("""
+    **1. 留白距離 (Padding)**
+    * 作用：控制紅框與圖案之間的「安全邊距」。
+    * 調整：如果紅線太貼近貼紙邊緣或文字，請**調大 Padding**（例如 30~50px）。
+    
+    ```
+    ┌─────────────────────────┐  <--- 紅色裁切框 (加了 Padding)
+    │        Padding 留白      │
+    │      ┌───────────┐      │
+    │      │  貼紙圖案  │      │
+    │      └───────────┘      │
+    │                         │
+    └─────────────────────────┘
+    ```
+
+    **2. 背景純白靈敏度**
+    * 數值高 (245~255)：只認純白底。
+    * 數值低 (210~235)：抗陰影能力強，能過濾貼紙周圍的淺灰陰影或污漬。
+
+    **3. 防切碎保護強度**
+    * 數值高 (30~50)：將圖案內部的白色區域（如白毛、白色英文字空隙）強制縫合，防止被掏空。
+    """)
 
 # 功能開關
 make_square = st.sidebar.checkbox("1. 強制擴展為 1:1 正方形（圖案置中）", value=True)
@@ -21,25 +46,25 @@ make_transparent = st.sidebar.checkbox("3. 一鍵去背（匯出透明底 PNG）
 export_format = st.sidebar.selectbox("4. 匯出格式", ["PNG" if make_transparent else "JPG", "PNG", "JPG"])
 
 st.sidebar.divider()
-st.sidebar.subheader("🎛️ 辨識精度微調")
-bg_thresh = st.sidebar.slider("背景純白靈敏度", 180, 255, 240, help="數值調低可有效過濾灰色陰影/污漬；調高適合極純白底。")
-protect_white = st.sidebar.slider("白色毛髮防切碎保護強度", 5, 45, 25, step=2, help="數值越高越能保證白色寵物內部不被掏空。")
-min_area = st.sidebar.slider("最小物件面積 (過濾小雜點)", 500, 30000, 3500, step=500)
-padding = st.sidebar.slider("外圍留白 (Padding px)", 0, 80, 15)
+st.sidebar.subheader("🎛️ 邊界與靈敏度調節")
+# 將預設 Padding 提高至 35，保證不再切到邊位
+padding = st.sidebar.slider("外圍留白距離 (Padding px)", 0, 100, 35, help="數值越大，紅框與貼紙之間的留白距離就越闊，避免切到邊位。")
+bg_thresh = st.sidebar.slider("背景純白靈敏度", 180, 255, 235, help="數值調低可有效過濾灰色陰影/污漬；調高適合極純白底。")
+protect_white = st.sidebar.slider("防切碎保護強度", 5, 55, 31, step=2, help="數值越高越能保證白色字體或寵物內部不被切開。")
+min_area = st.sidebar.slider("最小物件面積 (過濾小雜點)", 500, 50000, 5000, step=500)
 
-# 自訂字母代號
 prefix_char = st.sidebar.text_input("檔名編號前綴字元", value="a", help="例如輸入 'a'，產出檔名為 dog_a001.jpg")
 
 # ================= 核心圖像處理邏輯 =================
 def detect_boxes(img, bg_thresh, protect_white, min_area):
-    """偵測圖片中的物件邊界，並防範白色毛髮切碎"""
+    """偵測圖片中的物件邊界，並防範白色毛髮或文字切碎"""
     h, w = img.shape[:2]
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
     # 二值化抗陰影
     _, thresh = cv2.threshold(gray, bg_thresh, 255, cv2.THRESH_BINARY_INV)
 
-    # 形態學閉運算（將白狗、白貓內部空洞完全縫合）
+    # 形態學閉運算
     k_size = (protect_white, protect_white)
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, k_size)
     closed = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
@@ -50,20 +75,19 @@ def detect_boxes(img, bg_thresh, protect_white, min_area):
     valid_boxes = []
     for c in contours:
         if cv2.contourArea(c) > min_area:
-            # 使用 Convex Hull 確保邊界平滑包裹
             hull = cv2.convexHull(c)
             valid_boxes.append(cv2.boundingRect(hull))
 
     # 按行優先排序（由上至下、由左至右）
-    valid_boxes = sorted(valid_boxes, key=lambda b: (b[1] // 80, b[0]))
+    valid_boxes = sorted(valid_boxes, key=lambda b: (b[1] // 100, b[0]))
     return valid_boxes, gray
 
 def enhance_and_crop(img, box, gray, padding, make_square, upscale_1200, make_transparent, bg_thresh):
-    """執行裁切、補齊正方形、去背與 1200px 超採樣"""
+    """執行裁切、加足留白、補齊正方形、去背與 1200px 超採樣"""
     h, w = img.shape[:2]
     x, y, bw, bh = box
 
-    # 邊界擴展
+    # 邊界擴展（加入充足 padding 距離）
     x1 = max(0, x - padding)
     y1 = max(0, y - padding)
     x2 = min(w, x + bw + padding)
@@ -89,16 +113,14 @@ def enhance_and_crop(img, box, gray, padding, make_square, upscale_1200, make_tr
         right = max_dim - cw - left
 
         if make_transparent:
-            # 透明填充 [B, G, R, A]
             border_val = [0, 0, 0, 0]
         else:
-            # 純白填充 [B, G, R]
             border_val = [255, 255, 255]
 
         cropped = cv2.copyMakeBorder(cropped, top, bottom, left, right, cv2.BORDER_CONSTANT, value=border_val)
         ch, cw = cropped.shape[:2]
 
-    # 至少 1200 x 1200 px 畫質優化（高精度 Lanczos 插值）
+    # 至少 1200 x 1200 px 畫質優化（Lanczos 高精度插值）
     if upscale_1200:
         target_size = 1200
         if ch < target_size or cw < target_size:
@@ -123,35 +145,43 @@ if uploaded_files:
     with col_prev:
         btn_preview = st.button("🔍 預覽第一張圖的裁切邊界 (Preview)")
 
-    # 即時預覽模式
+    # 即時預覽模式（紅色框包含 Padding 留白，直觀反映實際裁切位置）
     if btn_preview:
         first_file = uploaded_files[0]
         file_bytes = np.asarray(bytearray(first_file.read()), dtype=np.uint8)
         img_preview = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-        first_file.seek(0) # 重置讀取指針
+        first_file.seek(0)
 
+        h_img, w_img = img_preview.shape[:2]
         boxes, gray = detect_boxes(img_preview, bg_thresh, protect_white, min_area)
         
-        # 在預覽圖上標示紅色識別框
         debug_img = img_preview.copy()
         for idx, (x, y, bw, bh) in enumerate(boxes, start=1):
-            cv2.rectangle(debug_img, (x, y), (x + bw, y + bh), (0, 0, 255), 3)
-            cv2.putText(debug_img, f"#{idx}", (x, max(20, y - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 0), 2)
+            # 預覽紅線直接加上 Padding，實時反映留白距離
+            x1 = max(0, x - padding)
+            y1 = max(0, y - padding)
+            x2 = min(w_img, x + bw + padding)
+            y2 = min(h_img, y + bh + padding)
 
-        st.subheader("👀 識別紅框預覽（請確認是否有圖案漏檢或被切破）：")
+            cv2.rectangle(debug_img, (x1, y1), (x2, y2), (0, 0, 255), 4)
+            cv2.putText(debug_img, f"#{idx}", (x1 + 8, max(30, y1 + 35)), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 0, 0), 3)
+
+        st.subheader("👀 實際裁切紅框預覽（紅線已包含留白 Padding）：")
+        st.caption("提示：如果覺得紅線太貼近圖案或太遠，可以在左邊側邊欄調整「外圍留白距離 (Padding)」，然後重新按一次 Preview。")
         st.image(cv2.cvtColor(debug_img, cv2.COLOR_BGR2RGB), use_container_width=True)
 
         if boxes:
-            st.write("單張成品效果預覽（第一隻圖案）：")
+            st.write("---")
+            st.subheader("單張成品效果預覽（第一隻圖案）：")
             sample_crop = enhance_and_crop(
                 img_preview, boxes[0], gray, padding, make_square, upscale_1200, make_transparent, bg_thresh
             )
             h_out, w_out = sample_crop.shape[:2]
-            st.caption(f"成品解析度：{w_out} x {h_out} px")
+            st.caption(f"📐 輸出解析度：{w_out} x {h_out} px (已達到印刷標準)")
             if make_transparent:
-                st.image(cv2.cvtColor(sample_crop, cv2.COLOR_BGRA2RGBA), width=280)
+                st.image(cv2.cvtColor(sample_crop, cv2.COLOR_BGRA2RGBA), width=320)
             else:
-                st.image(cv2.cvtColor(sample_crop, cv2.COLOR_BGR2RGB), width=280)
+                st.image(cv2.cvtColor(sample_crop, cv2.COLOR_BGR2RGB), width=320)
 
     st.write("---")
     # 批量處理按鈕
@@ -181,7 +211,6 @@ if uploaded_files:
                 # 命名規則：原檔名_a001.jpg
                 item_name = f"{base_name}_{prefix_char}{idx:03d}{ext}"
 
-                # 高質量編碼輸出
                 if ext == ".jpg":
                     encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 98]
                 else:
@@ -211,7 +240,6 @@ if uploaded_files:
             type="primary"
         )
 
-        # 預覽前 12 張
         st.subheader("👀 切割成品成果預覽（前 12 張）")
         cols = st.columns(6)
         for i, (name, data, cur_ext) in enumerate(all_results[:12]):
