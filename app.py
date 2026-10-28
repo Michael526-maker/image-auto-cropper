@@ -11,6 +11,14 @@ st.set_page_config(page_title="PRO 圖片批量裁切與高清增強工具", pag
 st.title("✂️ 專業級不規則圖片自動切割與畫質優化工具")
 st.caption("支援抗陰影、防白毛切碎、正方形置中補齊、透明底及高解析度印刷輸出！")
 
+# ================= 狀態管理 (一鍵清空 / Refresh 功能) =================
+if "crop_uploader_key" not in st.session_state:
+    st.session_state.crop_uploader_key = 0
+
+def clear_and_refresh():
+    st.session_state.crop_uploader_key += 1
+    st.rerun()
+
 # ================= 安全讀圖函數 =================
 def load_image_safely(file_bytes):
     """安全讀取圖片，自動將透明背景轉換為白底，徹底解決黑底無法辨識問題"""
@@ -162,15 +170,19 @@ def enhance_and_crop(img, box, gray, padding, make_square, target_size, make_tra
 uploaded_files = st.file_uploader(
     "請選擇或批量拖曳圖片到此（支援 PNG, JPG, JPEG, WEBP）", 
     type=["png", "jpg", "jpeg", "webp"], 
-    accept_multiple_files=True
+    accept_multiple_files=True,
+    key=f"crop_uploader_{st.session_state.crop_uploader_key}"  # 綁定動態 key
 )
 
 if uploaded_files:
-    col_info, col_prev = st.columns([2, 1])
+    col_info, col_prev, col_clear = st.columns([2, 1, 1])
     with col_info:
         st.info(f"📁 已選取 **{len(uploaded_files)}** 張圖片")
     with col_prev:
-        btn_preview = st.button("🔍 預覽第一張圖的裁切邊界 (Preview)")
+        btn_preview = st.button("🔍 預覽第一張圖 (Preview)", use_container_width=True)
+    with col_clear:
+        # 清除與刷新按鈕
+        st.button("🗑️ 清空重新上傳 (Refresh)", on_click=clear_and_refresh, use_container_width=True)
 
     if btn_preview:
         first_file = uploaded_files[0]
